@@ -2,8 +2,8 @@ from jupyterhub.handlers import BaseHandler
 from jupyterhub.auth import Authenticator
 from jupyterhub.auth import LocalAuthenticator
 from jupyterhub.utils import url_path_join
-from tornado import gen, web
-from traitlets import Unicode, Bool
+from tornado import web
+from traitlets import Unicode
 import jwt
 
 
@@ -12,22 +12,34 @@ class JSONWebTokenLoginHandler(BaseHandler):
     async def get(self):
 
         # Read config
+        cookie_name = self.authenticator.cookie_name
+        rsa_public_key = self.authenticator.rsa_public_key
         signing_certificate = self.authenticator.signing_certificate
         secret = self.authenticator.secret
         username_claim_field = self.authenticator.username_claim_field
         audience = self.authenticator.expected_audience
 
+        # Fix cookie name
+        if not cookie_name:
+            cookie_name = "XSRF-TOKEN"
+
         # Read values
-        auth_cookie_content = self.get_cookie("_qctrl_jwt", "")
+        auth_cookie_content = self.get_cookie(cookie_name, "")
 
         # Determine whether to use cookie content or query parameters
         if auth_cookie_content:
-            decoded = self.verify_jwt(auth_cookie_content, secret, signing_certificate, audience)
+            decoded = self.verify_jwt(
+                auth_cookie_content,
+                secret=secret,
+                signing_certificate=signing_certificate,
+                rsa_public_key=rsa_public_key,
+                audience=audience
+            )
             access_token = decoded["access"]
             refresh_token = decoded["refresh"]
             self.log.info("Successfuly decoded access and refresh tokens")
         else:
-            self.log.info("The _qctrl_jwt cookie was not found, or was empty")
+            self.log.info("The cookie was not found, or was empty")
             raise web.HTTPError(401)
 
         # Parse access token
@@ -57,12 +69,19 @@ class JSONWebTokenLoginHandler(BaseHandler):
 
         self.redirect(_url)
 
-    def verify_jwt(self, token, secret, signing_certificate, audience):
+    def verify_jwt(self,
+                   token, 
+                   secret = None,
+                   signing_certificate = None,
+                   rsa_public_key = None,
+                   audience = None):
         claims = ""
         if secret:
             claims = self.verify_jwt_using_secret(token, secret, audience)
         elif signing_certificate:
             claims = self.verify_jwt_using_certificate(token, signing_certificate, audience)
+        elif rsa_public_key:
+            claims = self.verify_jwt_using_secret(token, b64decode(rsa_public_key.encode()).decode(), audience)
         else:
             raise web.HTTPError(401)
 
@@ -79,7 +98,7 @@ class JSONWebTokenLoginHandler(BaseHandler):
             audience = None
 
         try:
-            return jwt.decode(token, secret, algorithms='RS256', audience=audience)
+            return jwt.decode(token, secret, algorithms=['RS256'], audience=audience)
         except jwt.ExpiredSignatureError:
             self.log.error("Token has expired")
         except jwt.PyJWTError as ex:
@@ -118,6 +137,17 @@ class JSONWebTokenAuthenticator(Authenticator):
         """
     )
 
+    rsa_public_key = Unicode(
+        config=True,
+        help="""
+        String with rsa public key encoded with base64.
+        """
+    )
+
+    cookie_name = Unicode(
+        config=True,
+        help="""The name of the cookie where is stored the JWT token""")
+
     username_claim_field = Unicode(
         default_value='upn',
         config=True,
@@ -154,12 +184,12 @@ class JSONWebTokenAuthenticator(Authenticator):
             self.log.warn("Auth state was empty!")
 
             # Set empty strings to avoid KeyError exceptions
-            spawner.environment['QCTRL_ACCESS_TOKEN'] = ''
-            spawner.environment['QCTRL_REFRESH_TOKEN'] = ''
+            spawner.environment['JWT_ACCESS_TOKEN'] = ''
+            spawner.environment['JWT_REFRESH_TOKEN'] = ''
             return
 
-        spawner.environment['QCTRL_ACCESS_TOKEN'] = auth_state['access_token']
-        spawner.environment['QCTRL_REFRESH_TOKEN'] = auth_state['refresh_token']
+        spawner.environment['JWT_ACCESS_TOKEN'] = auth_state['access_token']
+        spawner.environment['JWT_REFRESH_TOKEN'] = auth_state['refresh_token']
 
 class JSONWebTokenLocalAuthenticator(JSONWebTokenAuthenticator, LocalAuthenticator):
     """
