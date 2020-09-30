@@ -26,7 +26,7 @@ setup(
     name='qctrl-jupyterhub-authenticator',
     version='0.0.12',
     description='Q-CTRL JupyterHub JWT Authenticator',
-    python_requires='<3.8,>=3.6.4',
+    python_requires='<3.9,>=3.6.4',
     author='Q-CTRL',
     author_email='support@q-ctrl.com',
     packages=['jwtauthenticator'],
