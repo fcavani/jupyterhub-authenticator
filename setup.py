@@ -23,7 +23,7 @@ if os.path.exists(readme_path):
 
 setup(
     long_description=readme,
-    name='qctrl-jupyterhub-authenticator',
+    name='jupyterhub-authenticator',
     version='0.0.12',
     description='Q-CTRL JupyterHub JWT Authenticator',
     python_requires='>=3.6.4',
@@ -32,6 +32,6 @@ setup(
     packages=['jwtauthenticator'],
     package_dir={"": "."},
     package_data={},
-    install_requires=['jupyterhub==>=1.0.0', 'pyjwt==>=1.7.1'],
+    install_requires=['jupyterhub>=1.0.0', 'pyjwt>=1.7.1'],
     extras_require={"dev": ["pylama==7.*,>=7.7.1"]},
 )
