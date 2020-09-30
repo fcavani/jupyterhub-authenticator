@@ -13,7 +13,7 @@ name = 'Q-CTRL PyPI'
 url = 'https://pypi.q-ctrl.com/simple'
 
 [tool.poetry.dependencies]  # https://poetry.eustace.io/docs/versions
-python = ">=3.6.4, <3.8"
+python = ">=3.6.4"
 jupyterhub = "^1.0.0"
 pyjwt = "^1.7.1"
 
