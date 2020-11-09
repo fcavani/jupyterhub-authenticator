@@ -18,7 +18,7 @@ setup(
     long_description=readme,
     name='jupyterhub-authenticator',
     version='1.0.0',
-    description=Rentbrella JupyterHub JWT Authenticator',
+    description='Rentbrella JupyterHub JWT Authenticator',
     python_requires='>=3.6.4',
     author='Rentbrella',
     author_email='ti@rentbrella.com',
