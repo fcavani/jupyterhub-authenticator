@@ -1,16 +1,20 @@
+import os
+import json
+from base64 import b64decode
 from jupyterhub.handlers import BaseHandler
 from jupyterhub.auth import Authenticator
 from jupyterhub.auth import LocalAuthenticator
 from jupyterhub.utils import url_path_join
-from tornado import web
-from traitlets import Unicode
+from traitlets import Unicode, Callable
 import jwt
+
+
+DEFAULT_COOKIE_NAME = "XSRF-TOKEN"
 
 
 class JSONWebTokenLoginHandler(BaseHandler):
 
     async def get(self):
-
         # Read config
         cookie_name = self.authenticator.cookie_name
         rsa_public_key = self.authenticator.rsa_public_key
@@ -19,55 +23,73 @@ class JSONWebTokenLoginHandler(BaseHandler):
         username_claim_field = self.authenticator.username_claim_field
         audience = self.authenticator.expected_audience
 
-        # Fix cookie name
-        if not cookie_name:
-            cookie_name = "XSRF-TOKEN"
-
         # Read values
         auth_cookie_content = self.get_cookie(cookie_name, "")
 
         # Determine whether to use cookie content or query parameters
+        decoded = dict()
         if auth_cookie_content:
-            decoded = self.verify_jwt(
-                auth_cookie_content,
-                secret=secret,
-                signing_certificate=signing_certificate,
-                rsa_public_key=rsa_public_key,
-                audience=audience
-            )
-            access_token = decoded["access"]
-            refresh_token = decoded["refresh"]
-            self.log.info("Successfuly decoded access and refresh tokens")
+            try:
+                decoded = self.verify_jwt(
+                    auth_cookie_content,
+                    secret=secret,
+                    signing_certificate=signing_certificate,
+                    rsa_public_key=rsa_public_key,
+                    audience=audience
+                )
+                self.log.info("Successfully decoded access and refresh tokens")
+            except ExceptionJWT:
+                if self.redirect_to_sso():
+                    return
         else:
-            self.log.info("The cookie was not found, or was empty")
-            raise web.HTTPError(401)
-
-        # Parse access token
-        claims = self.verify_jwt(access_token, secret, signing_certificate, audience)
+            if self.redirect_to_sso():
+                return
 
         # JWT was valid
-        self.log.info("Claims: %s", claims)
-        username = self.retrieve_username(claims, username_claim_field)
+        username = self.retrieve_username(decoded, username_claim_field)
+
+        if self.authenticator.validate_token_hook:
+            valid = self.authenticator.validate_token_hook(auth_cookie_content)
+            if not valid:
+                if self.redirect_to_sso():
+                    return
 
         user = self.user_from_username(username)
         self.set_login_cookie(user)
 
-        # Persist to database
-        auth_info = {
-            "name": username,
-            "auth_state": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-            }
-        }
-        await self.auth_to_user(auth_info)
+        home_dir = self.authenticator.home_dir
+        if not home_dir:
+            raise ExceptionMissingConfigurationParameter("Missing home directory.")
+        user_path = os.path.join(
+            home_dir,
+            username
+        )
+        sso_path = os.path.join(
+            str(user_path),
+            self.authenticator.token_file
+        )
+        if not os.path.exists(user_path):
+            os.makedirs(user_path)
+        if os.path.exists(sso_path):
+            os.remove(sso_path)
+        with open(sso_path, "w+") as f:
+            json.dump({
+                'jwt': auth_cookie_content
+            }, f, indent=2)
 
+        # Redirect to the next url until the user arrives at the Jupyter environment.
         _url = url_path_join(self.hub.server.base_url, 'spawn')
         next_url = self.get_argument('next', default=False)
         if next_url:
              _url = next_url
-
         self.redirect(_url)
+
+    def redirect_to_sso(self):
+        hook = self.authenticator.redirect_to_sso_hook
+        if not hook:
+            return False
+        self.redirect(hook(self))
+        return True
 
     def verify_jwt(self,
                    token, 
@@ -83,8 +105,7 @@ class JSONWebTokenLoginHandler(BaseHandler):
         elif rsa_public_key:
             claims = self.verify_jwt_using_secret(token, b64decode(rsa_public_key.encode()).decode(), audience)
         else:
-            raise web.HTTPError(401)
-
+            raise ExceptionJWT("JWT not valid")
         return claims
 
     def verify_jwt_using_certificate(self, token, signing_certificate, audience):
@@ -96,29 +117,28 @@ class JSONWebTokenLoginHandler(BaseHandler):
         # If no audience is supplied then assume we're not verifying the audience field.
         if audience == "":
             audience = None
-
         try:
             return jwt.decode(token, secret, algorithms=['RS256'], audience=audience)
         except jwt.ExpiredSignatureError:
             self.log.error("Token has expired")
+            raise ExceptionJWT("Token has expired")
         except jwt.PyJWTError as ex:
             self.log.error("Token error - %s", ex)
+            raise ExceptionJWT("Token error")
         except Exception as ex:
             self.log.error("Could not decode token claims - %s", ex)
-        raise web.HTTPError(403)
+            raise ExceptionJWT("Could not decode token claims")
 
-    def retrieve_username(self, claims, username_claim_field):
+    @staticmethod
+    def retrieve_username(claims, username_claim_field):
         # retrieve the username from the claims
         username = claims[username_claim_field]
-
         # Our system returns the username as an integer - convert to string
         if not isinstance(username, str):
             username = "%s" % username
-
         if "@" in username:
             # process username as if email, pull out string before '@' symbol
             return username.split("@")[0]
-
         else:
             # assume not username and return the user
             return username
@@ -128,6 +148,12 @@ class JSONWebTokenAuthenticator(Authenticator):
     """
     Accept the authenticated JSON Web Token from header or query parameter.
     """
+    redirect_unauthorized = Unicode(
+        default_value='',
+        config=True,
+        help="""Login url to redirect if can't login."""
+    )
+
     signing_certificate = Unicode(
         config=True,
         help="""
@@ -146,6 +172,7 @@ class JSONWebTokenAuthenticator(Authenticator):
 
     cookie_name = Unicode(
         config=True,
+        default_value=DEFAULT_COOKIE_NAME,
         help="""The name of the cookie where is stored the JWT token""")
 
     username_claim_field = Unicode(
@@ -167,32 +194,94 @@ class JSONWebTokenAuthenticator(Authenticator):
         config=True,
         help="""Shared secret key for signing JWT token.  If defined, it overrides any setting for signing_certificate""")
 
-    def get_handlers(self, app):
+    home_dir = Unicode(
+        config=True,
+        help="""Home directory.""")
+    
+    token_file = Unicode(
+        default_value='.jwt_sso.json',
+        config=True,
+        help="""User token file name.""")
+        
+    validate_token_hook = Callable(
+        default_value=None,
+        allow_none=True,
+        config=True,
+        help="""Function that will be called when the validation of the token are required."""
+    )
+
+    redirect_to_sso_hook = Callable(
+        default_value=None,
+        allow_none=True,
+        config=True,
+        help="""Function that will be called when the jwt is invalid. This redirect to sso login url. """
+    )
+
+    def get_handlers(_self, _app):
         return [
             (r'/login', JSONWebTokenLoginHandler),
         ]
 
-    def authenticate(self, handler, data):
+    async def authenticate(_self, _handler, _data):
         raise NotImplementedError()
 
     async def pre_spawn_start(self, user, spawner):
-        """Pass upstream_token to spawner via environment variable"""
-        self.log.info("Setting auth_state environment variables")
-
-        auth_state = await user.get_auth_state()
-        if not auth_state:
-            self.log.warn("Auth state was empty!")
-
-            # Set empty strings to avoid KeyError exceptions
-            spawner.environment['JWT_ACCESS_TOKEN'] = ''
-            spawner.environment['JWT_REFRESH_TOKEN'] = ''
+        if not self.home_dir:
+            raise ExceptionMissingConfigurationParameter("Missing home directory.")
+        path = os.path.join(
+            self.home_dir,
+            user.name,
+            self.token_file
+        )
+        try:
+            with open(path, "r") as f:
+                jwt = json.load(f)
+        except Exception as ex:
+            self.log.error("Can't load token from file!", ex)
+            spawner.environment['JWT'] = ''
             return
+        spawner.environment['JWT'] = jwt['jwt']
 
-        spawner.environment['JWT_ACCESS_TOKEN'] = auth_state['access_token']
-        spawner.environment['JWT_REFRESH_TOKEN'] = auth_state['refresh_token']
+    async def refresh_user(self, user, handler, force=False):
+        self.log.debug(f"refresh user {user.name}, force={force}, home dir: {self.home_dir}")
+        if force:
+            return False
+        cookie_name = self.cookie_name
+        jwt_cookie = handler.get_cookie(cookie_name)
+        if not jwt_cookie:
+            return False
+        if not self.home_dir:
+            return False
+        path = os.path.join(
+            self.home_dir,
+            user.name,
+            self.token_file
+        )
+        try:
+            with open(path, "r") as f:
+                jwt = json.load(f)
+            token = jwt['jwt']
+            if token and self.validate_token_hook:
+                valid = self.validate_token_hook(token)
+                if not valid:
+                    handler.clear_cookie(cookie_name)
+                    return False
+        except Exception as ex:
+            self.log.error(f"Can't load token from file for user {user.name}: {ex}")
+            return False
+        return True
+
 
 class JSONWebTokenLocalAuthenticator(JSONWebTokenAuthenticator, LocalAuthenticator):
     """
     A version of JSONWebTokenAuthenticator that mixes in local system user creation
     """
+    pass
+
+
+class ExceptionJWT(Exception):
+    pass
+
+
+class ExceptionMissingConfigurationParameter(Exception):
     pass
