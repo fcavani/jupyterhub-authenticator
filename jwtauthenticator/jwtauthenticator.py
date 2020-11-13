@@ -252,14 +252,14 @@ class JSONWebTokenAuthenticator(Authenticator):
                 user.name,
                 self.token_file
             )
-            valid = await self._validate_auth_token(user, path)
+            valid = self._validate_auth_token(user, path)
             if valid:
                 return True
         self.log.info(f"quicking off user {user.name} (force={force}, home_dir={self.home_dir})")
-        await self._quick_off_user(handler)
+        self._quick_off_user(handler)
         return False
 
-    async def _validate_auth_token(self, user, path):
+    def _validate_auth_token(self, user, path):
         try:
             with open(path, "r") as f:
                 jwt = json.load(f)
@@ -273,7 +273,7 @@ class JSONWebTokenAuthenticator(Authenticator):
         self.log.info(f"user {user.name} have a invalid token")
         return False
 
-    async def _quick_off_user(self, handler):
+    def _quick_off_user(self, handler):
         handler.clear_cookie(self.cookie_name)
         handler.clear_cookie("jupyterhub-hub-login")
         handler.clear_cookie("jupyterhub-session-id")
