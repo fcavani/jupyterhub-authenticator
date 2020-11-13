@@ -243,33 +243,40 @@ class JSONWebTokenAuthenticator(Authenticator):
         spawner.environment['JWT'] = jwt['jwt']
 
     async def refresh_user(self, user, handler, force=False):
-        self.log.debug(f"refresh user {user.name}, force={force}, home dir: {self.home_dir}")
+        self.log.info(f"refresh user {user.name}, force={force}, home dir: {self.home_dir}")
         if force:
             return False
-        cookie_name = self.cookie_name
-        jwt_cookie = handler.get_cookie(cookie_name)
-        if not jwt_cookie:
-            return False
-        if not self.home_dir:
-            return False
-        path = os.path.join(
-            self.home_dir,
-            user.name,
-            self.token_file
-        )
+        if self.home_dir:
+            path = os.path.join(
+                self.home_dir,
+                user.name,
+                self.token_file
+            )
+            valid = await self._validate_auth_token(user, path)
+            if valid:
+                return True
+        self.log.info(f"quicking off user {user.name} (force={force}, home_dir={self.home_dir})")
+        await self._quick_off_user(handler)
+        return False
+
+    async def _validate_auth_token(self, user, path):
         try:
             with open(path, "r") as f:
                 jwt = json.load(f)
             token = jwt['jwt']
             if token and self.validate_token_hook:
-                valid = self.validate_token_hook(token)
-                if not valid:
-                    handler.clear_cookie(cookie_name)
-                    return False
+                if self.validate_token_hook(token):
+                    self.log.info(f"user {user.name} have a valid token")
+                    return True
         except Exception as ex:
             self.log.error(f"Can't load token from file for user {user.name}: {ex}")
-            return False
-        return True
+        self.log.info(f"user {user.name} have a invalid token")
+        return False
+
+    async def _quick_off_user(self, handler):
+        handler.clear_cookie(self.cookie_name)
+        handler.clear_cookie("jupyterhub-hub-login")
+        handler.clear_cookie("jupyterhub-session-id")
 
 
 class JSONWebTokenLocalAuthenticator(JSONWebTokenAuthenticator, LocalAuthenticator):
