@@ -246,22 +246,25 @@ class JSONWebTokenAuthenticator(Authenticator):
         self.log.info(f"refresh user {user.name}, force={force}, home dir: {self.home_dir}")
         if force:
             return False
+        sso_path = ""
         if self.home_dir:
-            path = os.path.join(
+            sso_path = os.path.join(
                 self.home_dir,
                 user.name,
                 self.token_file
             )
-            valid = self._validate_auth_token(user, path)
+            valid = self._validate_auth_token(user, sso_path)
             if valid:
                 return True
         self.log.info(f"quicking off user {user.name} (force={force}, home_dir={self.home_dir})")
-        self._quick_off_user(handler)
+        self._quick_off_user(handler, sso_path)
         return False
 
-    def _validate_auth_token(self, user, path):
+    def _validate_auth_token(self, user, sso_path):
+        if not os.path.exists(sso_path):
+            return True
         try:
-            with open(path, "r") as f:
+            with open(sso_path, "r") as f:
                 jwt = json.load(f)
             token = jwt['jwt']
             if token and self.validate_token_hook:
@@ -273,7 +276,9 @@ class JSONWebTokenAuthenticator(Authenticator):
         self.log.info(f"user {user.name} have a invalid token")
         return False
 
-    def _quick_off_user(self, handler):
+    def _quick_off_user(self, handler, sso_path):
+        if sso_path and os.path.exists(sso_path):
+            os.remove(sso_path)
         handler.clear_cookie(self.cookie_name)
         handler.clear_cookie("jupyterhub-hub-login")
         handler.clear_cookie("jupyterhub-session-id")
