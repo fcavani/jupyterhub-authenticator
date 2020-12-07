@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 from base64 import b64decode
 from jupyterhub.handlers import BaseHandler
 from jupyterhub.auth import Authenticator
@@ -72,6 +73,8 @@ class JSONWebTokenLoginHandler(BaseHandler):
             os.makedirs(user_path)
         if os.path.exists(sso_path):
             os.remove(sso_path)
+        os.close(os.open(sso_path, os.O_CREAT, 0o600))
+        shutil.chown(sso_path, username, 'users')
         with open(sso_path, "w+") as f:
             json.dump({
                 'jwt': auth_cookie_content
