@@ -273,6 +273,7 @@ class JSONWebTokenAuthenticator(Authenticator):
             if token and self.validate_token_hook:
                 if self.validate_token_hook(token):
                     self.log.info(f"user {user.name} have a valid token")
+                    user.spawner.environment['JWT'] = token
                     return True
         except Exception as ex:
             self.log.error(f"Can't load token from file for user {user.name}: {ex}")
@@ -280,6 +281,7 @@ class JSONWebTokenAuthenticator(Authenticator):
         return False
 
     def _quick_off_user(self, handler, sso_path):
+        user.spawner.environment['JWT'] = ''
         if sso_path and os.path.exists(sso_path):
             os.remove(sso_path)
         handler.clear_cookie(self.cookie_name)
