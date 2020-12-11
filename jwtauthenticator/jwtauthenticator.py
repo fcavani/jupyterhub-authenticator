@@ -73,13 +73,18 @@ class JSONWebTokenLoginHandler(BaseHandler):
             os.makedirs(user_path)
         if os.path.exists(sso_path):
             os.remove(sso_path)
-        os.close(os.open(sso_path, os.O_CREAT, 0o600))
-        shutil.chown(sso_path, username, 'users')
+        try:
+            # At the first time there is no user at the password db.
+            # Leave that for the next pass at pre_spawn_hook.
+            os.close(os.open(sso_path, os.O_CREAT, 0o600))
+            shutil.chown(sso_path, user=username, group='users')
+        except LookupError as ex:
+            os.close(os.open(sso_path, os.O_CREAT, 0o660))
+            shutil.chown(sso_path, group='users')
         with open(sso_path, "w+") as f:
             json.dump({
                 'jwt': auth_cookie_content
             }, f, indent=2)
-
         # Redirect to the next url until the user arrives at the Jupyter environment.
         _url = url_path_join(self.hub.server.base_url, 'spawn')
         next_url = self.get_argument('next', default=False)
